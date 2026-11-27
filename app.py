@@ -14,7 +14,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-app = FastAPI(title="NoLogo Downloader", version="4")
+app = FastAPI(title="NoLogo Downloader", version="5")
 
 ALLOWED_HOSTS = {
     "tiktok.com", "www.tiktok.com", "m.tiktok.com", "vm.tiktok.com",
@@ -138,7 +138,7 @@ def extract_douyin_id(url: str, session: requests.Session) -> str:
     response.raise_for_status()
     final_url = response.url
     for pattern in (
-        r"/video/(\d+)", r"/share/video/(\d+)",
+        r"/video/(\d+)", r"/share/video/(\d+)", r"/note/(\d+)", r"/share/note/(\d+)",
         r"[?&]modal_id=(\d+)", r"[?&]item_id=(\d+)",
     ):
         match = re.search(pattern, final_url)
@@ -179,40 +179,112 @@ def walk_objects(value):
         for child in value:
             yield from walk_objects(child)
 
+
+def _urls_from_image_item(item):
+    found = []
+    preferred = ("origin_image", "display_image", "image", "cover")
+    if isinstance(item, dict):
+        for key in preferred:
+            value = item.get(key)
+            if isinstance(value, dict):
+                found.extend(value.get("url_list") or [])
+        found.extend(item.get("url_list") or [])
+        for key, value in item.items():
+            if key not in preferred and key != "url_list" and isinstance(value, (dict, list)):
+                found.extend(_urls_from_image_item(value))
+    elif isinstance(item, list):
+        for child in item:
+            found.extend(_urls_from_image_item(child))
+    return list(dict.fromkeys(
+        value for value in found
+        if isinstance(value, str) and value.startswith(("https://", "http://"))
+    ))
+
+def _find_douyin_image_album(router):
+    for obj in walk_objects(router):
+        for key in ("images", "image_list"):
+            slides = obj.get(key)
+            if isinstance(slides, list) and slides:
+                urls = []
+                for slide in slides:
+                    slide_urls = _urls_from_image_item(slide)
+                    if slide_urls:
+                        urls.append(slide_urls[0])
+                urls = list(dict.fromkeys(urls))
+                if urls:
+                    return urls
+        info = obj.get("image_post_info")
+        if isinstance(info, dict):
+            slides = info.get("images") or info.get("image_list") or []
+            if isinstance(slides, list) and slides:
+                urls = []
+                for slide in slides:
+                    slide_urls = _urls_from_image_item(slide)
+                    if slide_urls:
+                        urls.append(slide_urls[0])
+                urls = list(dict.fromkeys(urls))
+                if urls:
+                    return urls
+    return []
+
 def extract_douyin_public_data(url: str):
     session = create_douyin_session()
     aweme_id = extract_douyin_id(url, session)
-    share_url = f"https://www.iesdouyin.com/share/video/{aweme_id}/"
+    resolved = session.get(url, allow_redirects=True, timeout=(10, 25))
+    resolved.raise_for_status()
+    is_note = bool(re.search(r"/(?:share/)?note/\d+", resolved.url))
+    share_url = (
+        f"https://www.iesdouyin.com/share/note/{aweme_id}/"
+        if is_note else f"https://www.iesdouyin.com/share/video/{aweme_id}/"
+    )
     response = session.get(
-        share_url,
-        headers={"Referer": "https://www.douyin.com/"},
-        timeout=(10, 30),
+        share_url, headers={"Referer": "https://www.douyin.com/"},
+        timeout=(10, 30)
     )
     response.raise_for_status()
     router = parse_router_data(response.text)
+
+    image_urls = _find_douyin_image_album(router)
+    if image_urls:
+        title = f"Douyin Photo Album {aweme_id}"
+        for obj in walk_objects(router):
+            desc = obj.get("desc") or obj.get("title")
+            if isinstance(desc, str) and desc.strip():
+                title = desc.strip()[:300]
+                break
+        return {
+            "aweme_id": aweme_id, "title": title, "media_type": "photos",
+            "image_urls": image_urls, "play_url": None,
+            "thumbnail": image_urls[0], "session": session,
+        }
 
     for obj in walk_objects(router):
         video = obj.get("video")
         if not isinstance(video, dict):
             continue
-        play_addr = video.get("play_addr") or {}
-        urls = play_addr.get("url_list") or []
-        if not urls:
+        candidates = []
+        for key in ("play_addr", "play_addr_h264", "play_addr_265", "play_addr_bytevc1"):
+            value = video.get(key)
+            if isinstance(value, dict):
+                candidates.extend(value.get("url_list") or [])
+        play_url = next(
+            (u for u in candidates if isinstance(u, str) and u.startswith("https://")),
+            None
+        )
+        if not play_url:
             continue
         desc = obj.get("desc") or obj.get("description") or f"Douyin_{aweme_id}"
         cover = video.get("cover") or video.get("origin_cover") or {}
         cover_urls = cover.get("url_list") or []
-        # Keep the public playback URL exactly as supplied by Douyin.
         return {
-            "aweme_id": aweme_id,
-            "title": str(desc)[:300],
+            "aweme_id": aweme_id, "title": str(desc)[:300],
+            "media_type": "video",
             "thumbnail": cover_urls[0] if cover_urls else None,
-            "play_url": urls[0],
-            "session": session,
+            "play_url": play_url, "image_urls": [], "session": session,
         }
     raise RuntimeError(
-        "Đã mở được trang chia sẻ nhưng không thấy play_addr trong dữ liệu công khai. "
-        "Douyin có thể đã đổi cấu trúc, chặn IP máy chủ hoặc giới hạn bài đăng."
+        "Trang chia sẻ đã mở nhưng không tìm thấy dữ liệu video hoặc album ảnh công khai. "
+        "Douyin có thể đã đổi cấu trúc hoặc giới hạn nội dung."
     )
 
 def ydl_options():
@@ -223,9 +295,21 @@ def ydl_options():
         "http_headers": {"User-Agent": DESKTOP_UA},
     }
 
+
+def has_audio_stream(path: Path) -> bool:
+    ffprobe = shutil.which("ffprobe")
+    if not ffprobe:
+        return False
+    result = subprocess.run(
+        [ffprobe, "-v", "error", "-select_streams", "a",
+         "-show_entries", "stream=codec_type", "-of", "csv=p=0", str(path)],
+        capture_output=True, text=True, timeout=20
+    )
+    return result.returncode == 0 and "audio" in result.stdout.lower()
+
 @app.get("/api/health")
 def health():
-    return {"ok": True, "service": "NoLogo Downloader", "version": "4"}
+    return {"ok": True, "service": "NoLogo Downloader", "version": "5"}
 
 @app.post("/api/info")
 def get_info(body: LinkRequest):
@@ -237,8 +321,9 @@ def get_info(body: LinkRequest):
             data = extract_douyin_public_data(original_url)
             return {
                 "title": data["title"], "thumbnail": data["thumbnail"],
-                "platform": "Douyin", "media_type": "video", "formats": [],
-                "note": "Đọc từ trang chia sẻ công khai. Giữ nguyên luồng phát mà Douyin cung cấp.",
+                "platform": "Douyin", "media_type": data["media_type"],
+                "image_count": len(data.get("image_urls") or []), "formats": [],
+                "note": "Ảnh/video được lấy từ dữ liệu công khai mà Douyin cung cấp.",
             }
         except Exception as exc:
             raise HTTPException(422, f"Không phân tích được Douyin: {str(exc)[:650]}")
@@ -289,6 +374,29 @@ def download(body: LinkRequest):
         try:
             data = extract_douyin_public_data(original_url)
             temp_dir = Path(tempfile.mkdtemp(prefix="nologo_douyin_"))
+            if data["media_type"] == "photos":
+                zip_path = temp_dir / f"douyin_album_{data['aweme_id']}.zip"
+                allowed_media_hosts = ("douyinpic.com", "byteimg.com", "ibytedtos.com", "pstatp.com")
+                with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as archive:
+                    saved = 0
+                    for index, image_url in enumerate(data["image_urls"], 1):
+                        host = (urlparse(image_url).hostname or "").lower()
+                        if not any(host == h or host.endswith("." + h) for h in allowed_media_hosts):
+                            continue
+                        image_response = data["session"].get(
+                            image_url, headers={"Referer": "https://www.douyin.com/"},
+                            timeout=(10, 45), stream=True
+                        )
+                        image_response.raise_for_status()
+                        content = image_response.content
+                        if content and len(content) <= 32 * 1024 * 1024:
+                            ctype = image_response.headers.get("Content-Type", "").lower()
+                            ext = ".webp" if "webp" in ctype else ".png" if "png" in ctype else ".jpg"
+                            archive.writestr(f"image-{index:02d}{ext}", content)
+                            saved += 1
+                if saved == 0:
+                    raise RuntimeError("Không tải được ảnh nào từ album Douyin.")
+                return FileResponse(zip_path, media_type="application/zip", filename=zip_path.name)
             file_path = temp_dir / f"douyin_{data['aweme_id']}.mp4"
             with data["session"].get(
                 data["play_url"], stream=True,
@@ -337,15 +445,15 @@ def download(body: LinkRequest):
             raise HTTPException(422, f"Tải album ảnh thất bại: {str(exc)[:650]}")
 
     quality = body.quality if body.quality in {"best", "1080", "720", "480"} else "best"
-    fmt = "bestvideo*+bestaudio/best" if quality == "best" else (
-        f"bestvideo[height<={int(quality)}]+bestaudio/best[height<={int(quality)}]/best"
+    fmt = "bestvideo[vcodec^=avc1]+bestaudio/best[ext=mp4][vcodec^=avc1][acodec!=none]/best" if quality == "best" else (
+        f"bestvideo[height<={int(quality)}][vcodec^=avc1]+bestaudio/best[height<={int(quality)}][ext=mp4][vcodec^=avc1][acodec!=none]/best"
     )
     temp_dir = tempfile.mkdtemp(prefix="nologo_tiktok_")
     opts = {
         "quiet": True, "no_warnings": True, "noplaylist": True,
         "format": fmt,
         "outtmpl": str(Path(temp_dir) / "%(title).80s_%(id)s.%(ext)s"),
-        "merge_output_format": "mp4", "retries": 2, "socket_timeout": 30,
+        "merge_output_format": "mp4", "retries": 3, "socket_timeout": 45,
         "http_headers": {"User-Agent": DESKTOP_UA},
     }
     try:
@@ -359,6 +467,11 @@ def download(body: LinkRequest):
                 if not matches:
                     raise FileNotFoundError("Không tìm thấy tệp sau khi tải.")
                 path = matches[0]
+            if not has_audio_stream(path):
+                raise RuntimeError(
+                    "TikTok không cung cấp luồng âm thanh dùng được cho định dạng đã chọn. "
+                    "V5 ưu tiên H.264 có tiếng; hãy thử lại hoặc kiểm tra bản gốc."
+                )
         safe_name = re.sub(r"[^A-Za-z0-9._-]+", "_", path.name)[:120]
         return FileResponse(path, media_type="video/mp4", filename=safe_name)
     except Exception as exc:

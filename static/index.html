@@ -27,7 +27,7 @@ button{border:0;border-radius:13px;padding:14px 18px;font-weight:700;background:
 <div class="controls" id="photoControls" style="display:none"><button id="downloadPhotos">Tải toàn bộ ảnh (.zip)</button></div></div>
 <div id="status" role="status"></div></section>
 <div class="notice"><b>Thông tin:</b> Với Douyin, V3 thử đọc dữ liệu video được nhúng trong trang chia sẻ công khai bằng trình duyệt di động. Không dùng cookie tài khoản, không đăng nhập và không tự ý sửa URL phát để loại watermark. Nếu Douyin không công khai luồng video cho khách, website sẽ báo rõ thay vì giả vờ thành công.</div>
-<footer>NoLogo Downloader · V4 thử nghiệm</footer></main>
+<footer>NoLogo Downloader · V5 thử nghiệm</footer></main>
 <script>
 const $=id=>document.getElementById(id);let currentText="",currentInfo=null;
 async function getJson(url,body){const r=await fetch(url,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});let d={};try{d=await r.json()}catch{}if(!r.ok)throw new Error(d.detail||"Có lỗi khi xử lý liên kết.");return d}
