@@ -64,11 +64,34 @@ class DouyinSlidesTests(unittest.TestCase):
         obj, slides = _find_douyin_slide_list(self.router, AWEME_ID)
         self.assertIsNotNone(obj)
         self.assertEqual(len(slides), 3)
-        self.assertEqual(len(_slide_image_urls(slides[0])), 2)
+        self.assertEqual(len(_slide_image_urls(slides[0])), 1)
+        self.assertEqual(_slide_image_urls(slides[0])[0], "https://p3-pc-sign.douyinpic.com/slide-1.jpg")
         self.assertEqual(len(_slide_video_urls(slides[0])), 1)
         self.assertEqual(len(_slide_image_urls(slides[1])), 1)
         self.assertEqual(len(_slide_video_urls(slides[1])), 0)
         self.assertEqual(len(_slide_video_urls(slides[2])), 1)
+
+    def test_watermarked_download_url_is_not_selected_as_image(self):
+        slide = {
+            "download_url_list": ["https://p3-pc-sign.douyinpic.com/watermarked.jpg"],
+            "url_list": [
+                "https://p3-pc-sign.douyinpic.com/preview.jpg",
+                "https://p3-pc-sign.douyinpic.com/original-clean.jpg",
+            ],
+        }
+        urls = _slide_image_urls(slide)
+        self.assertEqual(urls[0], "https://p3-pc-sign.douyinpic.com/original-clean.jpg")
+        self.assertNotIn("https://p3-pc-sign.douyinpic.com/watermarked.jpg", urls)
+
+    def test_unrelated_aweme_is_not_used_as_fallback(self):
+        payload = {"items": [{"aweme_id": "1111111111111111111", "images": [{"url_list": ["https://p3-pc-sign.douyinpic.com/random.jpg"]}]}]}
+        self.assertIsNone(_find_douyin_slide_list(payload, AWEME_ID)[0])
+
+    def test_live_photo_uri_has_public_play_endpoint_fallback(self):
+        slide = {"video": {"play_addr": {"uri": "live-photo-uri"}}}
+        urls = _slide_video_urls(slide)
+        self.assertTrue(urls)
+        self.assertIn("/aweme/v1/play/?video_id=live-photo-uri", urls[0])
 
     def test_background_music_is_separate_from_live_photo_clips(self):
         self.assertEqual(_find_douyin_music_url(self.router), "https://sf1-cdn-tos.douyinstatic.com/music.mp3")
