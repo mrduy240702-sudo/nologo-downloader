@@ -39,7 +39,7 @@ $("check").addEventListener("click",async()=>{const text=$("url").value.trim();i
 currentText=text;$("check").disabled=true;$("status").textContent="Đang mở và phân tích liên kết…";$("result").style.display="none";
 try{const data=await getJson("/api/info",{url:text});currentInfo=data;$("title").textContent=data.title;$("platform").textContent="Nguồn: "+data.platform;
 if(data.media_type==="photos"){$("qualityNote").textContent=`Đã tìm thấy ${data.image_count} ảnh`;$("videoControls").style.display="none";$("photoControls").style.display="flex";$("downloadPhotos").textContent="Tải toàn bộ ảnh (.zip)"}
-else if(data.media_type==="slides"){$("qualityNote").textContent=`${data.slide_count} mục · ${data.image_count} ảnh · ${data.video_count} clip`;$("videoControls").style.display="none";$("photoControls").style.display="flex";$("downloadPhotos").textContent=data.video_count>0?"Tải nội dung tìm được (.zip)":"Tải album ảnh (.zip)";if(data.note)$("status").textContent=data.note}
+else if(data.media_type==="slides"){$("qualityNote").textContent=`${data.slide_count} mục · ${data.image_count} ảnh · ${data.video_count} clip${data.video_count===0&&data.image_count>0?" · Nguồn chưa cung cấp URL clip riêng":""}`;$("videoControls").style.display="none";$("photoControls").style.display="flex";$("downloadPhotos").textContent=data.video_count>0?"Tải nội dung tìm được (.zip)":"Tải album ảnh (.zip)"}
 else{$("qualityNote").textContent=data.note||"Video sẵn sàng tải";$("videoControls").style.display="flex";$("photoControls").style.display="none"}
 $("thumb").src=data.thumbnail||"";$("result").style.display="block";$("status").textContent="Đã phân tích xong."}
 catch(e){$("status").textContent=e.message}finally{$("check").disabled=false}});
