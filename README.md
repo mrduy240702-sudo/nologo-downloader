@@ -12,11 +12,13 @@ Replace `app.py`, `requirements.txt`, `README.md`, and `static/index.html` in Gi
 Python syntax checked locally. The supplied TikTok link resolves to video ID `7700681905875733780`. The supplied Douyin short link resolves to `/share/note/7707603431581603657/`, confirming it is an image post. Live media extraction from Render still needs to be tested.
 
 
-## V5.2 experimental Douyin slides
+## V5.5 experimental Douyin images and slides
 - Recognizes Douyin `/share/slides/` URLs and `is_slides=1`.
 - Treats every slide as an image, video, or Live Photo (image + clip).
 - Live Photo clips are read from each slide's nested `images[i].video.play_addr`; post-level audio/music is not mistaken for motion footage.
-- Downloads available slide assets in source order into ZIP; adds a report if individual assets fail.
+- Prefers the final URL in `url_list` for original images; avoids `download_url_list` because it may return watermarked images.
+- Downloads available slide assets in source order into ZIP; includes only successfully downloaded media files, with no manifest/report sidecars.
+- Requires an exact `aweme_id` match and never falls back to an unrelated post; retries multiple candidate URLs for each media asset.
 - Does not remove, crop, blur, or otherwise conceal watermarks. Uses only media URLs present in public share data.
 
 This is an experimental branch; live Douyin links still require testing before merging.
