@@ -283,7 +283,10 @@ def _slide_video_urls(slide: dict) -> list[str]:
     candidates = []
     for key in ("video", "video_play_addr", "video_download_addr"):
         video = slide.get(key)
+        if video is None:
+            continue
         if not isinstance(video, dict):
+            candidates.extend(_video_address_urls(video))
             continue
 
         # Some responses wrap the playback object under video.play_addr;
