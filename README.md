@@ -6,7 +6,7 @@
 - Keeps V4 TikTok Photo Mode support.
 
 ## Deploy
-Replace `app.py`, `requirements.txt`, `README.md`, and `static/index.html` in GitHub. Keep `Procfile`. Commit to `main`; deploy latest commit in Render. The build command in this render.yaml installs FFmpeg for audio merging and validation.
+Replace `app.py`, `requirements.txt`, `README.md`, and `static/index.html` in GitHub. Keep `Procfile`. Commit to `main`; deploy latest commit in Render. Render's native Python runtime already includes FFmpeg and ffprobe. Use `pip install -r requirements.txt` as the Build Command.
 
 ## Testing status
 Python syntax checked locally. The supplied TikTok link resolves to video ID `7700681905875733780`. The supplied Douyin short link resolves to `/share/note/7707603431581603657/`, confirming it is an image post. Live media extraction from Render still needs to be tested.
