@@ -14,7 +14,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-app = FastAPI(title="NoLogo Downloader", version="5.4")
+app = FastAPI(title="NoLogo Downloader", version="5.5")
 
 ALLOWED_HOSTS = {
     "tiktok.com", "www.tiktok.com", "m.tiktok.com", "vm.tiktok.com",
@@ -183,7 +183,7 @@ def walk_objects(value):
 DOUYIN_MEDIA_HOSTS = (
     "douyinpic.com", "byteimg.com", "pstatp.com", "ibytedtos.com",
     "douyinvod.com", "zjcdn.com", "snssdk.com", "bytecdn.cn", "aweme.snssdk.com",
-    "bytedance.net", "bytedance.com", "douyinstatic.com", "douyin.com", "toutiao.com",
+    "bytedance.net", "bytedance.com", "douyinstatic.com", "douyin.com", "iesdouyin.com", "toutiao.com",
 )
 
 def is_allowed_douyin_media_url(value: str) -> bool:
@@ -218,16 +218,15 @@ def _url_list(value):
 
 
 def _slide_image_urls(slide: dict) -> list[str]:
-    """Prefer download URLs and fall back to preview URLs only if needed."""
-    for key in (
-        "download_url", "download_addr", "download_url_list",
-        "url_list", "origin_image", "display_image", "image",
-    ):
+    """
+    Prefer the last item in url_list (commonly the original/high-resolution
+    image). Do not use download_url_list: Douyin may watermark those downloads.
+    """
+    for key in ("url_list", "origin_image", "display_image", "image"):
         urls = _url_list(slide.get(key))
         if urls:
-            return urls
+            return list(reversed(urls))
     return []
-
 
 def _uri_video_fallback(video: dict) -> list[str]:
     play_addr = video.get("play_addr")
@@ -236,13 +235,14 @@ def _uri_video_fallback(video: dict) -> list[str]:
     uri = play_addr.get("uri")
     if not isinstance(uri, str) or not uri.strip():
         return []
-    video_id = uri.strip()
+    from urllib.parse import quote
+    video_id = quote(uri.strip(), safe="")
     return [
+        f"https://www.iesdouyin.com/aweme/v1/play/?video_id={video_id}&ratio=1080p&line=0",
         f"https://aweme.snssdk.com/aweme/v1/play/?video_id={video_id}&ratio=1080p&line=0",
         f"https://aweme.snssdk.com/aweme/v1/play/?video_id={video_id}&ratio=720p&line=0",
         f"https://aweme.snssdk.com/aweme/v1/play/?video_id={video_id}&line=0",
     ]
-
 
 def _clean_play_candidates(urls):
     """Prefer the platform's public play URL when it exposes a playwm variant."""
@@ -256,21 +256,19 @@ def _clean_play_candidates(urls):
 
 
 def _slide_video_urls(slide: dict) -> list[str]:
-    video = slide.get("video")
-    if not isinstance(video, dict):
-        video = slide.get("video_play_addr") or slide.get("video_download_addr")
-    if not isinstance(video, dict):
-        return []
     candidates = []
-    for key in ("play_addr", "play_addr_h264", "play_addr_265", "play_addr_bytevc1"):
-        candidates.extend(_url_list(video.get(key)))
-    for gear in video.get("bit_rate") or []:
-        if isinstance(gear, dict):
-            candidates.extend(_url_list(gear.get("play_addr")))
-    if not candidates:
-        candidates.extend(_uri_video_fallback(video))
+    for key in ("video", "video_play_addr", "video_download_addr"):
+        video = slide.get(key)
+        if not isinstance(video, dict):
+            continue
+        for addr_key in ("play_addr", "play_addr_h264", "play_addr_265", "play_addr_bytevc1", "play_addr_lowbr", "download_addr"):
+            candidates.extend(_url_list(video.get(addr_key)))
+        for gear in video.get("bit_rate") or []:
+            if isinstance(gear, dict):
+                candidates.extend(_url_list(gear.get("play_addr")))
+        if not any(_url_list(video.get(k)) for k in ("play_addr", "play_addr_h264", "play_addr_265", "play_addr_bytevc1", "play_addr_lowbr", "download_addr")):
+            candidates.extend(_uri_video_fallback(video))
     return _clean_play_candidates(list(dict.fromkeys(candidates)))
-
 
 def _find_douyin_slide_list(router, aweme_id: str):
     item = _find_douyin_aweme_item(router, aweme_id)
@@ -530,7 +528,7 @@ def _download_douyin_asset(session, urls, media_kind: str, max_bytes: int):
 
 @app.get("/api/health")
 def health():
-    return {"ok": True, "service": "NoLogo Downloader", "version": "5.4"}
+    return {"ok": True, "service": "NoLogo Downloader", "version": "5.5"}
 
 @app.post("/api/info")
 def get_info(body: LinkRequest):
