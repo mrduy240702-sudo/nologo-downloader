@@ -7,7 +7,7 @@ import subprocess
 import tempfile
 import zipfile
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import urlencode, urlparse
 
 import requests
 import yt_dlp
@@ -16,7 +16,9 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-app = FastAPI(title="NoLogo Downloader", version="5.7")
+from douyin_abogus import ABogus, BrowserFingerprintGenerator
+
+app = FastAPI(title="NoLogo Downloader", version="5.8")
 
 ALLOWED_HOSTS = {
     "tiktok.com", "www.tiktok.com", "m.tiktok.com", "vm.tiktok.com",
@@ -345,28 +347,53 @@ def _find_douyin_aweme_item(payload, aweme_id: str):
             return obj
     return None
 
+SLIDESINFO_UA = (
+    "Mozilla/5.0 (Linux; Android 10; K) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/114.0.0.0 Mobile Safari/537.36"
+)
+
+
+def _select_slidesinfo_aweme(payload, aweme_id: str):
+    """Return the exact aweme detail from slidesinfo; never choose a random item."""
+    details = payload.get("aweme_details") if isinstance(payload, dict) else None
+    if isinstance(details, list):
+        for detail in details:
+            if isinstance(detail, dict) and str(
+                detail.get("aweme_id") or detail.get("item_id") or ""
+            ) == str(aweme_id):
+                return detail
+    return _find_douyin_aweme_item(payload, aweme_id)
+
+
 def _fetch_douyin_slidesinfo(session: requests.Session, aweme_id: str):
     """
-    Fetch the dedicated slides detail payload. The share-page SSR commonly
-    exposes still images only; slidesinfo can include each Live Photo MP4.
+    Fetch the dedicated slides detail payload. A valid A-Bogus signature is
+    required; a random placeholder signature returns empty/blocked responses.
     """
-    web_id = "75" + "".join(secrets.choice(string.digits) for _ in range(15))
-    bogus = "".join(secrets.choice(string.ascii_letters + string.digits) for _ in range(64))
-    params = {
-        "reflow_source": "reflow_page",
-        "web_id": web_id,
-        "device_id": web_id,
-        "aweme_ids": f"[{aweme_id}]",
-        "request_source": "200",
-        "a_bogus": bogus,
-    }
+    web_id = "75" + "".join(secrets.choice(string.digits) for _ in range(17))
+    params = [
+        ("reflow_source", "reflow_page"),
+        ("web_id", web_id),
+        ("device_id", web_id),
+        ("aid", "1128"),
+        ("aweme_ids", f"[{aweme_id}]"),
+        ("request_source", "200"),
+    ]
+    query = urlencode(params)
+    fingerprint = BrowserFingerprintGenerator.generate_fingerprint("Chrome")
+    signer = ABogus(fp=fingerprint, user_agent=SLIDESINFO_UA)
+    signer.aid = 1128
+    signed_query = signer.generate_abogus(query)[0]
+
     response = session.get(
-        "https://www.iesdouyin.com/web/api/v2/aweme/slidesinfo/",
-        params=params,
+        "https://www.iesdouyin.com/web/api/v2/aweme/slidesinfo/?" + signed_query,
         headers={
+            "User-Agent": SLIDESINFO_UA,
             "Referer": f"https://www.iesdouyin.com/share/slides/{aweme_id}/",
             "Accept": "application/json, text/plain, */*",
-            "X-Requested-With": "XMLHttpRequest",
+            "Accept-Language": "zh-CN,zh;q=0.9",
+            "agw-js-conv": "str",
         },
         timeout=(10, 30),
     )
@@ -377,15 +404,25 @@ def _fetch_douyin_slidesinfo(session: requests.Session, aweme_id: str):
         payload = json.loads(response.text)
     if not isinstance(payload, dict):
         raise RuntimeError("slidesinfo không trả về JSON object")
-    details = payload.get("aweme_details")
-    if isinstance(details, list):
-        for detail in details:
-            if isinstance(detail, dict) and str(detail.get("aweme_id") or detail.get("item_id") or "") == str(aweme_id):
-                return payload, detail
-    item = _find_douyin_aweme_item(payload, aweme_id)
-    if item:
-        return payload, item
-    raise RuntimeError("slidesinfo không trả về đúng aweme_id hoặc không có media")
+    detail = _select_slidesinfo_aweme(payload, aweme_id)
+    if not detail:
+        raise RuntimeError(
+            f"slidesinfo không có aweme_id {aweme_id}; status_code={payload.get('status_code')}"
+        )
+    return payload, detail
+
+
+def _is_audio_media_url(value: str) -> bool:
+    parsed = urlparse(value)
+    path = (parsed.path or "").lower()
+    query = (parsed.query or "").lower()
+    host = (parsed.hostname or "").lower()
+    return (
+        path.endswith((".mp3", ".m4a", ".aac", ".wav", ".ogg", ".opus"))
+        or "mime_type=audio" in query
+        or "ies-music" in host
+        or "ies-music" in path
+    )
 
 
 def _find_douyin_music_url(router):
@@ -435,6 +472,32 @@ def _douyin_data_from_item(item, aweme_id, session, fallback_music=None):
                     "video_urls": video_urls,
                     "duration_ms": video_obj.get("duration"),
                 })
+        # A mixed post may carry an independent video at aweme_detail.video,
+        # while the soundtrack for a photo slideshow can also appear there.
+        # Only append it when it is a real timed video stream, not MP3 music.
+        root_video = item.get("video") if isinstance(item.get("video"), dict) else {}
+        root_duration = root_video.get("duration") or item.get("duration") or 0
+        try:
+            root_duration = int(root_duration)
+        except (TypeError, ValueError):
+            root_duration = 0
+        root_video_urls = [
+            u for u in _slide_video_urls({"video": root_video})
+            if not _is_audio_media_url(u)
+        ]
+        existing_video_urls = {
+            url for entry in items for url in entry.get("video_urls", [])
+        }
+        root_video_urls = [u for u in root_video_urls if u not in existing_video_urls]
+        if root_duration > 0 and root_video_urls:
+            items.append({
+                "index": max((entry["index"] for entry in items), default=0) + 1,
+                "kind": "video",
+                "image_urls": [],
+                "video_urls": root_video_urls,
+                "duration_ms": root_duration,
+            })
+
         if items:
             first_image = next((x["image_urls"][0] for x in items if x["image_urls"]), None)
             return {
@@ -625,7 +688,7 @@ def _download_douyin_asset(session, urls, media_kind: str, max_bytes: int):
 
 @app.get("/api/health")
 def health():
-    return {"ok": True, "service": "NoLogo Downloader", "version": "5.7"}
+    return {"ok": True, "service": "NoLogo Downloader", "version": "5.8"}
 
 @app.post("/api/info")
 def get_info(body: LinkRequest):
