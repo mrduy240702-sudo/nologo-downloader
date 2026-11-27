@@ -14,7 +14,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-app = FastAPI(title="NoLogo Downloader", version="5.5")
+app = FastAPI(title="NoLogo Downloader", version="6.0")
 
 ALLOWED_HOSTS = {
     "tiktok.com", "www.tiktok.com", "m.tiktok.com", "vm.tiktok.com",
@@ -528,7 +528,7 @@ def _download_douyin_asset(session, urls, media_kind: str, max_bytes: int):
 
 @app.get("/api/health")
 def health():
-    return {"ok": True, "service": "NoLogo Downloader", "version": "5.5"}
+    return {"ok": True, "service": "NoLogo Downloader", "version": "6.0"}
 
 @app.post("/api/info")
 def get_info(body: LinkRequest):
@@ -538,13 +538,26 @@ def get_info(body: LinkRequest):
     if platform == "Douyin":
         try:
             data = extract_douyin_public_data(original_url)
+            image_count = sum(1 for item in data.get("items", []) if item.get("image_urls"))
+            video_count = sum(1 for item in data.get("items", []) if item.get("video_urls"))
+            if data["media_type"] == "slides" and image_count and not video_count:
+                note = (
+                    "Đã tìm thấy ảnh. Dữ liệu công khai của bài này chưa cung cấp "
+                    "đường dẫn clip Live Photo/video có thể tải; ZIP có thể chỉ gồm ảnh tĩnh."
+                )
+            elif data["media_type"] == "slides":
+                note = (
+                    "Đã tìm thấy các tệp ảnh/video có đường dẫn công khai. "
+                    "ZIP chỉ chứa những tệp tải thành công."
+                )
+            else:
+                note = "Video Douyin sẵn sàng tải; chất lượng và watermark phụ thuộc nguồn công khai."
             return {
                 "title": data["title"], "thumbnail": data["thumbnail"],
                 "platform": "Douyin", "media_type": data["media_type"],
-                "image_count": sum(1 for item in data.get("items", []) if item["kind"] in ("image", "live_photo")),
-                "video_count": sum(1 for item in data.get("items", []) if item["kind"] in ("video", "live_photo")),
+                "image_count": image_count, "video_count": video_count,
                 "slide_count": len(data.get("items", [])), "formats": [],
-                "note": "Đã đọc các mục ảnh và video từ bài đăng Douyin.",
+                "note": note,
             }
         except Exception as exc:
             raise HTTPException(422, f"Không phân tích được Douyin: {str(exc)[:650]}")
@@ -628,7 +641,10 @@ def download(body: LinkRequest):
                     zip_path,
                     media_type="application/zip",
                     filename=zip_path.name,
-                    headers={"X-NoLogo-Partial-Download": str(len(failed))},
+                    headers={
+                        "X-NoLogo-Partial-Download": str(len(failed)),
+                        "X-NoLogo-Saved-Assets": str(saved),
+                    },
                 )
             file_path = temp_dir / f"douyin_{data['aweme_id']}.mp4"
             with data["session"].get(data["play_url"], stream=True, headers={"Referer": "https://www.douyin.com/"}, timeout=(15, 90)) as response:
