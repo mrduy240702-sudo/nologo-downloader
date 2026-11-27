@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#10131b">
+<title>NoLogo Downloader</title>
+<style>
+:root{color-scheme:dark;--bg:#10131b;--panel:#191e2a;--muted:#9aa4b5;--line:#2a3242;--accent:#8b7cff;--green:#65d6a3}
+*{box-sizing:border-box}body{margin:0;background:radial-gradient(ellipse at top,#222442 0,#10131b 48%);font:16px -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:#f5f6fb;min-height:100vh}
+main{width:min(720px,100%);margin:auto;padding:46px 20px 40px}
+.brand{display:flex;align-items:center;gap:12px;margin-bottom:35px}.logo{width:44px;height:44px;border-radius:14px;background:linear-gradient(135deg,#8b7cff,#4ed6bd);display:grid;place-items:center;font-size:22px;font-weight:800;color:#10131b}
+h1{font-size:clamp(28px,6vw,40px);margin:0;letter-spacing:-1.2px}.sub{color:var(--muted);margin:8px 0 28px;line-height:1.5}
+.card{background:rgba(25,30,42,.94);border:1px solid var(--line);border-radius:22px;padding:20px;box-shadow:0 18px 50px #0004}
+.tabs{display:flex;gap:8px;margin-bottom:16px}.tab{padding:8px 14px;border-radius:999px;background:#252b3a;color:#c8ceda;font-size:13px}.tab.active{background:#39345f;color:#fff}
+label{display:block;font-size:13px;color:#c6ccda;margin:0 0 9px}
+.inputrow{display:flex;gap:8px}input{min-width:0;flex:1;background:#101521;border:1px solid #343d50;border-radius:13px;padding:15px;color:white;font-size:15px;outline:none}input:focus{border-color:var(--accent)}
+button{border:0;border-radius:13px;padding:14px 18px;font-weight:700;background:var(--accent);color:white;font-size:14px;cursor:pointer}button:disabled{opacity:.5;cursor:wait}
+.hint{font-size:12px;color:var(--muted);line-height:1.55;margin:12px 2px 0}
+.result{display:none;margin-top:18px;background:#111722;border:1px solid var(--line);border-radius:16px;padding:14px}
+.preview{display:flex;gap:13px;align-items:center}.preview img{width:92px;height:112px;object-fit:cover;border-radius:10px;background:#252b3a}.meta{min-width:0}.title{font-weight:650;line-height:1.35;overflow-wrap:anywhere}.small{color:var(--muted);font-size:12px;margin-top:7px}
+.controls{display:flex;gap:9px;margin-top:15px;align-items:center}select{flex:1;min-width:0;background:#202738;color:#fff;border:1px solid #343d50;border-radius:12px;padding:13px}
+#status{color:var(--muted);font-size:13px;margin-top:14px;min-height:20px}.notice{margin-top:18px;padding:14px;border-radius:14px;background:#171d29;color:#aeb8c8;font-size:12px;line-height:1.6}
+footer{text-align:center;color:#778195;font-size:12px;margin-top:24px}
+@media(max-width:520px){main{padding:30px 16px}.card{padding:16px}.inputrow{flex-direction:column}.inputrow button{width:100%}.controls{flex-wrap:wrap}.controls button{width:100%}}
+</style>
+</head>
+<body>
+<main>
+  <div class="brand"><div class="logo">N</div><div><h1>NoLogo</h1><div style="color:#aab2c2;font-size:13px;margin-top:3px">TikTok · Douyin Downloader</div></div></div>
+  <p class="sub">Tải nội dung bạn có quyền lưu, ưu tiên chất lượng cao nhất mà nguồn cung cấp.</p>
+  <section class="card">
+    <div class="tabs"><span class="tab active">TikTok</span><span class="tab active">Douyin</span></div>
+    <label for="url">Dán liên kết video</label>
+    <div class="inputrow"><input id="url" type="url" placeholder="Dán liên kết TikTok hoặc Douyin tại đây"><button id="check">Phân tích</button></div>
+    <p class="hint">Hỗ trợ liên kết bài đăng công khai. Không cần nhập mật khẩu hoặc kết nối tài khoản.</p>
+    <div class="result" id="result">
+      <div class="preview"><img id="thumb" alt="Ảnh xem trước"><div class="meta"><div class="title" id="title"></div><div class="small" id="platform"></div><div class="small" id="qualityNote"></div></div></div>
+      <div class="controls"><select id="quality"><option value="best">Chất lượng cao nhất có thể</option><option value="1080">Tối đa 1080p</option><option value="720">Tối đa 720p</option><option value="480">Tối đa 480p</option></select><button id="download">Tải video</button></div>
+    </div>
+    <div id="status" role="status"></div>
+  </section>
+  <div class="notice"><b>Lưu ý về chất lượng:</b> Website sẽ chọn luồng video tốt nhất mà nền tảng cho phép truy cập. Không phải bài đăng nào cũng có bản không logo hoặc bản gốc. Tránh tải lại nội dung có bản quyền khi chưa được phép.</div>
+  <footer>NoLogo Downloader · Bản thử nghiệm</footer>
+</main>
+<script>
+const $=id=>document.getElementById(id);
+let currentUrl="", currentInfo=null;
+$("check").addEventListener("click", async()=>{
+  const url=$("url").value.trim();
+  if(!url){$("status").textContent="Bạn hãy dán liên kết trước nhé.";return;}
+  $("check").disabled=true;$("status").textContent="Đang phân tích liên kết…";$("result").style.display="none";
+  try{
+    const r=await fetch("/api/info",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({url})});
+    const data=await r.json();if(!r.ok)throw new Error(data.detail||"Không phân tích được liên kết.");
+    currentUrl=url;currentInfo=data;
+    $("title").textContent=data.title;$("platform").textContent="Nguồn: "+data.platform;
+    $("qualityNote").textContent=data.formats?.length?`${data.formats.length} định dạng video được phát hiện`:"Chưa liệt kê được các mức chất lượng";
+    $("thumb").src=data.thumbnail||"";$("result").style.display="block";$("status").textContent="Đã phân tích xong. Chọn chất lượng rồi tải xuống.";
+  }catch(e){$("status").textContent=e.message;}
+  finally{$("check").disabled=false;}
+});
+$("download").addEventListener("click",async()=>{
+  $("download").disabled=true;$("status").textContent="Đang tải và xử lý video…";
+  try{
+    const r=await fetch("/api/download",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({url:currentUrl,quality:$("quality").value})});
+    if(!r.ok){const d=await r.json();throw new Error(d.detail||"Tải thất bại.");}
+    const blob=await r.blob();const disposition=r.headers.get("Content-Disposition")||"";
+    const match=disposition.match(/filename="?([^"]+)"?/i);const name=match?match[1]:"nologo-video.mp4";
+    const a=document.createElement("a");const objectUrl=URL.createObjectURL(blob);a.href=objectUrl;a.download=name;document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(objectUrl),60000);
+    $("status").textContent="Đã tạo tệp tải xuống. Trên iPhone, kiểm tra Safari → Tải về hoặc ứng dụng Tệp.";
+  }catch(e){$("status").textContent=e.message;}
+  finally{$("download").disabled=false;}
+});
+</script>
+</body>
+</html>
