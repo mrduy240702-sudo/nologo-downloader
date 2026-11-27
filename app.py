@@ -1,5 +1,7 @@
 import json
 import re
+import secrets
+import string
 import shutil
 import subprocess
 import tempfile
@@ -14,7 +16,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-app = FastAPI(title="NoLogo Downloader", version="5.6")
+app = FastAPI(title="NoLogo Downloader", version="5.7")
 
 ALLOWED_HOSTS = {
     "tiktok.com", "www.tiktok.com", "m.tiktok.com", "vm.tiktok.com",
@@ -343,6 +345,49 @@ def _find_douyin_aweme_item(payload, aweme_id: str):
             return obj
     return None
 
+def _fetch_douyin_slidesinfo(session: requests.Session, aweme_id: str):
+    """
+    Fetch the dedicated slides detail payload. The share-page SSR commonly
+    exposes still images only; slidesinfo can include each Live Photo MP4.
+    """
+    web_id = "75" + "".join(secrets.choice(string.digits) for _ in range(15))
+    bogus = "".join(secrets.choice(string.ascii_letters + string.digits) for _ in range(64))
+    params = {
+        "reflow_source": "reflow_page",
+        "web_id": web_id,
+        "device_id": web_id,
+        "aweme_ids": f"[{aweme_id}]",
+        "request_source": "200",
+        "a_bogus": bogus,
+    }
+    response = session.get(
+        "https://www.iesdouyin.com/web/api/v2/aweme/slidesinfo/",
+        params=params,
+        headers={
+            "Referer": f"https://www.iesdouyin.com/share/slides/{aweme_id}/",
+            "Accept": "application/json, text/plain, */*",
+            "X-Requested-With": "XMLHttpRequest",
+        },
+        timeout=(10, 30),
+    )
+    response.raise_for_status()
+    try:
+        payload = response.json()
+    except ValueError:
+        payload = json.loads(response.text)
+    if not isinstance(payload, dict):
+        raise RuntimeError("slidesinfo không trả về JSON object")
+    details = payload.get("aweme_details")
+    if isinstance(details, list):
+        for detail in details:
+            if isinstance(detail, dict) and str(detail.get("aweme_id") or detail.get("item_id") or "") == str(aweme_id):
+                return payload, detail
+    item = _find_douyin_aweme_item(payload, aweme_id)
+    if item:
+        return payload, item
+    raise RuntimeError("slidesinfo không trả về đúng aweme_id hoặc không có media")
+
+
 def _find_douyin_music_url(router):
     for obj in walk_objects(router):
         music = obj.get("music")
@@ -445,6 +490,22 @@ def extract_douyin_public_data(url: str):
 
     errors = []
     music_url = None
+
+    errors = []
+    music_url = None
+
+    # Image posts and Live Photo albums need the dedicated slidesinfo response;
+    # the ordinary share-page SSR can contain the static image but omit its MP4.
+    if is_slides or is_note:
+        try:
+            slides_payload, slides_item = _fetch_douyin_slidesinfo(session, aweme_id)
+            music_url = _find_douyin_music_url(slides_payload)
+            data = _douyin_data_from_item(slides_item, aweme_id, session, music_url)
+            if data and data.get("items"):
+                return data
+            errors.append("slidesinfo: có dữ liệu nhưng không tìm thấy ảnh/clip trong từng slide")
+        except Exception as exc:
+            errors.append(f"slidesinfo: {str(exc)[:150]}")
     for path in paths:
         suffix = "/?is_slides=1" if path == "slides" else "/"
         share_url = f"https://www.iesdouyin.com/share/{path}/{aweme_id}{suffix}"
@@ -564,7 +625,7 @@ def _download_douyin_asset(session, urls, media_kind: str, max_bytes: int):
 
 @app.get("/api/health")
 def health():
-    return {"ok": True, "service": "NoLogo Downloader", "version": "5.6"}
+    return {"ok": True, "service": "NoLogo Downloader", "version": "5.7"}
 
 @app.post("/api/info")
 def get_info(body: LinkRequest):
