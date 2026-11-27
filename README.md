@@ -12,14 +12,15 @@ Replace `app.py`, `requirements.txt`, `README.md`, and `static/index.html` in Gi
 Python syntax checked locally. The supplied TikTok link resolves to video ID `7700681905875733780`. The supplied Douyin short link resolves to `/share/note/7707603431581603657/`, confirming it is an image post. Live media extraction from Render still needs to be tested.
 
 
-## V5.6 experimental Douyin images, slides and Live Photo video
-- Recognizes Douyin `/share/slides/` URLs and `is_slides=1`.
-- Treats every slide as an image, video, or Live Photo (image + clip).
-- Live Photo clips are read from each slide's nested `images[i].video.play_addr`; post-level audio/music is not mistaken for motion footage.
-- Prefers the final URL in `url_list` for original images; avoids `download_url_list` because it may return watermarked images.
-- Downloads available slide assets in source order into ZIP; includes only successfully downloaded media files, with no manifest/report sidecars.
-- Requires an exact `aweme_id` match and never falls back to an unrelated post; retries multiple candidate URLs for each media asset.
-- Recognizes Live Photo clips exposed as nested `video.play_addr`, direct `video_play_addr` / `video_download_addr`, URL lists, or URI-only playback objects. Builds the public playback endpoint when only a video URI is available.
-- Does not remove, crop, blur, or otherwise conceal watermarks. Uses only media URLs present in public share data.
 
-This is an experimental branch; live Douyin links still require testing before merging.
+
+## V5.8 experimental Douyin mixed media
+- Request the dedicated `slidesinfo` payload with a generated A-Bogus signature instead of sending a random placeholder signature.
+- Select the exact `aweme_id` from `aweme_details`; no fallback to a different post.
+- Extract Live Photo MP4 streams from each gallery image's nested `video.play_addr` and compatible address fields.
+- Preserve a separate root-level video in a mixed image+video post when it has a positive duration and a video URL.
+- Do not treat a root-level MP3 soundtrack (`video.duration == 0`) as a video clip.
+- Keeps the V5.5 image URL preference and ZIP containing only successfully downloaded media.
+- A-Bogus signing code adapted from F2 under Apache-2.0; see `THIRD_PARTY_NOTICES.md` and `licenses/F2-APACHE-2.0.txt`.
+
+This branch is experimental; GitHub fixture tests do not replace live verification of Douyin share URLs.
