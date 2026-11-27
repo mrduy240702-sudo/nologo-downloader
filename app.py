@@ -14,7 +14,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-app = FastAPI(title="NoLogo Downloader", version="5")
+app = FastAPI(title="NoLogo Downloader", version="6.0")
 
 ALLOWED_HOSTS = {
     "tiktok.com", "www.tiktok.com", "m.tiktok.com", "vm.tiktok.com",
@@ -138,7 +138,7 @@ def extract_douyin_id(url: str, session: requests.Session) -> str:
     response.raise_for_status()
     final_url = response.url
     for pattern in (
-        r"/video/(\d+)", r"/share/video/(\d+)", r"/note/(\d+)", r"/share/note/(\d+)",
+        r"/video/(\d+)", r"/share/video/(\d+)", r"/slides/(\d+)", r"/share/slides/(\d+)", r"/note/(\d+)", r"/share/note/(\d+)",
         r"[?&]modal_id=(\d+)", r"[?&]item_id=(\d+)",
     ):
         match = re.search(pattern, final_url)
@@ -180,111 +180,285 @@ def walk_objects(value):
             yield from walk_objects(child)
 
 
-def _urls_from_image_item(item):
-    found = []
-    preferred = ("origin_image", "display_image", "image", "cover")
-    if isinstance(item, dict):
-        for key in preferred:
-            value = item.get(key)
-            if isinstance(value, dict):
-                found.extend(value.get("url_list") or [])
-        found.extend(item.get("url_list") or [])
-        for key, value in item.items():
-            if key not in preferred and key != "url_list" and isinstance(value, (dict, list)):
-                found.extend(_urls_from_image_item(value))
-    elif isinstance(item, list):
-        for child in item:
-            found.extend(_urls_from_image_item(child))
+DOUYIN_MEDIA_HOSTS = (
+    "douyinpic.com", "byteimg.com", "pstatp.com", "ibytedtos.com",
+    "douyinvod.com", "zjcdn.com", "snssdk.com", "bytecdn.cn", "aweme.snssdk.com",
+    "bytedance.net", "bytedance.com", "douyinstatic.com", "douyin.com", "iesdouyin.com", "toutiao.com",
+)
+
+def is_allowed_douyin_media_url(value: str) -> bool:
+    try:
+        parsed = urlparse(value)
+        host = (parsed.hostname or "").lower()
+        return parsed.scheme == "https" and any(host == d or host.endswith("." + d) for d in DOUYIN_MEDIA_HOSTS)
+    except Exception:
+        return False
+
+def _url_list(value):
+    """Normalize URL fields used by Douyin's different image/video payloads."""
+    if isinstance(value, str):
+        values = [value]
+    elif isinstance(value, dict):
+        values = value.get("url_list") or value.get("urls") or []
+        for key in ("url", "src"):
+            candidate = value.get(key)
+            if isinstance(candidate, str):
+                values = list(values) + [candidate]
+    elif isinstance(value, list):
+        values = value
+    else:
+        values = []
+    if not isinstance(values, list):
+        return []
     return list(dict.fromkeys(
-        value for value in found
-        if isinstance(value, str) and value.startswith(("https://", "http://"))
+        u.strip() for u in values
+        if isinstance(u, str) and u.strip().startswith("https://")
+        and is_allowed_douyin_media_url(u.strip())
     ))
 
-def _find_douyin_image_album(router):
-    for obj in walk_objects(router):
-        for key in ("images", "image_list"):
-            slides = obj.get(key)
-            if isinstance(slides, list) and slides:
-                urls = []
-                for slide in slides:
-                    slide_urls = _urls_from_image_item(slide)
-                    if slide_urls:
-                        urls.append(slide_urls[0])
-                urls = list(dict.fromkeys(urls))
-                if urls:
-                    return urls
-        info = obj.get("image_post_info")
-        if isinstance(info, dict):
-            slides = info.get("images") or info.get("image_list") or []
-            if isinstance(slides, list) and slides:
-                urls = []
-                for slide in slides:
-                    slide_urls = _urls_from_image_item(slide)
-                    if slide_urls:
-                        urls.append(slide_urls[0])
-                urls = list(dict.fromkeys(urls))
-                if urls:
-                    return urls
+
+def _slide_image_urls(slide: dict) -> list[str]:
+    """
+    Prefer the last item in url_list (commonly the original/high-resolution
+    image). Do not use download_url_list: Douyin may watermark those downloads.
+    """
+    for key in ("url_list", "origin_image", "display_image", "image"):
+        urls = _url_list(slide.get(key))
+        if urls:
+            return list(reversed(urls))
     return []
 
+def _uri_video_fallback(video: dict) -> list[str]:
+    play_addr = video.get("play_addr")
+    if not isinstance(play_addr, dict):
+        return []
+    uri = play_addr.get("uri")
+    if not isinstance(uri, str) or not uri.strip():
+        return []
+    from urllib.parse import quote
+    video_id = quote(uri.strip(), safe="")
+    return [
+        f"https://www.iesdouyin.com/aweme/v1/play/?video_id={video_id}&ratio=1080p&line=0",
+        f"https://aweme.snssdk.com/aweme/v1/play/?video_id={video_id}&ratio=1080p&line=0",
+        f"https://aweme.snssdk.com/aweme/v1/play/?video_id={video_id}&ratio=720p&line=0",
+        f"https://aweme.snssdk.com/aweme/v1/play/?video_id={video_id}&line=0",
+    ]
+
+def _clean_play_candidates(urls):
+    """Prefer the platform's public play URL when it exposes a playwm variant."""
+    result = []
+    for url in urls:
+        clean = url.replace("/playwm/", "/play/").replace("playwm", "play")
+        if clean != url:
+            result.append(clean)
+        result.append(url)
+    return list(dict.fromkeys(result))
+
+
+def _slide_video_urls(slide: dict) -> list[str]:
+    candidates = []
+    for key in ("video", "video_play_addr", "video_download_addr"):
+        video = slide.get(key)
+        if not isinstance(video, dict):
+            continue
+        for addr_key in ("play_addr", "play_addr_h264", "play_addr_265", "play_addr_bytevc1", "play_addr_lowbr", "download_addr"):
+            candidates.extend(_url_list(video.get(addr_key)))
+        for gear in video.get("bit_rate") or []:
+            if isinstance(gear, dict):
+                candidates.extend(_url_list(gear.get("play_addr")))
+        if not any(_url_list(video.get(k)) for k in ("play_addr", "play_addr_h264", "play_addr_265", "play_addr_bytevc1", "play_addr_lowbr", "download_addr")):
+            candidates.extend(_uri_video_fallback(video))
+    return _clean_play_candidates(list(dict.fromkeys(candidates)))
+
+def _find_douyin_slide_list(router, aweme_id: str):
+    item = _find_douyin_aweme_item(router, aweme_id)
+    if not item:
+        return None, []
+    images = item.get("images")
+    if isinstance(images, list) and images:
+        return item, images
+    info = item.get("image_post_info")
+    if isinstance(info, dict):
+        images = info.get("images") or info.get("image_list")
+        if isinstance(images, list) and images:
+            return item, images
+    for key in ("image_list", "image_infos", "original_images"):
+        images = item.get(key)
+        if isinstance(images, list) and images:
+            return item, images
+    return item, []
+
+
+def _find_douyin_aweme_item(payload, aweme_id: str):
+    """Only return the requested aweme. Never guess from an unrelated media object."""
+    wanted = str(aweme_id)
+    for obj in walk_objects(payload):
+        obj_id = str(obj.get("aweme_id") or obj.get("item_id") or obj.get("modal_id") or "")
+        if obj_id != wanted:
+            continue
+        has_media = (
+            isinstance(obj.get("video"), dict)
+            or isinstance(obj.get("images"), list)
+            or isinstance(obj.get("image_post_info"), dict)
+            or isinstance(obj.get("image_list"), list)
+            or isinstance(obj.get("image_infos"), list)
+        )
+        if has_media:
+            return obj
+    return None
+
+def _find_douyin_music_url(router):
+    for obj in walk_objects(router):
+        music = obj.get("music")
+        if not isinstance(music, dict):
+            continue
+        urls = _url_list(music.get("play_url"))
+        if urls:
+            return urls[0]
+    return None
+
+
+def _douyin_data_from_item(item, aweme_id, session, fallback_music=None):
+    title = item.get("desc") or item.get("title") or f"Douyin_{aweme_id}"
+    title = str(title).strip()[:300]
+
+    images = item.get("images")
+    image_info = item.get("image_post_info")
+    if not isinstance(images, list) or not images:
+        if isinstance(image_info, dict):
+            images = image_info.get("images") or image_info.get("image_list")
+    if not isinstance(images, list) or not images:
+        for key in ("image_list", "image_infos", "original_images"):
+            candidate = item.get(key)
+            if isinstance(candidate, list) and candidate:
+                images = candidate
+                break
+
+    music = item.get("music") if isinstance(item.get("music"), dict) else {}
+    music_urls = _url_list(music.get("play_url"))
+    music_url = music_urls[0] if music_urls else fallback_music
+
+    if isinstance(images, list) and images:
+        items = []
+        for index, slide in enumerate(images, 1):
+            if not isinstance(slide, dict):
+                continue
+            image_urls = _slide_image_urls(slide)
+            video_urls = _slide_video_urls(slide)
+            if image_urls or video_urls:
+                video_obj = slide.get("video") if isinstance(slide.get("video"), dict) else {}
+                items.append({
+                    "index": index,
+                    "kind": "live_photo" if image_urls and video_urls else ("video" if video_urls else "image"),
+                    "image_urls": image_urls,
+                    "video_urls": video_urls,
+                    "duration_ms": video_obj.get("duration"),
+                })
+        if items:
+            first_image = next((x["image_urls"][0] for x in items if x["image_urls"]), None)
+            return {
+                "aweme_id": aweme_id, "title": title, "media_type": "slides",
+                "items": items, "thumbnail": first_image, "music_url": music_url,
+                "session": session,
+            }
+
+    video = item.get("video") if isinstance(item.get("video"), dict) else {}
+    video_urls = []
+    for key in ("play_addr", "play_addr_h264", "play_addr_265", "play_addr_bytevc1"):
+        video_urls.extend(_url_list(video.get(key)))
+    for rate in video.get("bit_rate") or []:
+        if isinstance(rate, dict):
+            video_urls.extend(_url_list(rate.get("play_addr")))
+    if not video_urls:
+        video_urls.extend(_uri_video_fallback(video))
+    video_urls = _clean_play_candidates(list(dict.fromkeys(video_urls)))
+    if not video_urls:
+        return None
+
+    cover_urls = []
+    for key in ("origin_cover", "cover", "dynamic_cover"):
+        cover_urls.extend(_url_list(video.get(key)))
+    return {
+        "aweme_id": aweme_id, "title": title, "media_type": "video",
+        "thumbnail": cover_urls[0] if cover_urls else None,
+        "play_url": video_urls[0], "video_urls": video_urls,
+        "items": [], "music_url": music_url, "session": session,
+    }
+
 def extract_douyin_public_data(url: str):
+    """
+    Multi-strategy public parser:
+    1) SSR share pages (slides, note, video)
+    2) legacy public iteminfo JSON endpoint
+    The SSR page alone may not contain the full slide/live-photo payload.
+    """
     session = create_douyin_session()
     aweme_id = extract_douyin_id(url, session)
     resolved = session.get(url, allow_redirects=True, timeout=(10, 25))
     resolved.raise_for_status()
-    is_note = bool(re.search(r"/(?:share/)?note/\d+", resolved.url))
-    share_url = (
-        f"https://www.iesdouyin.com/share/note/{aweme_id}/"
-        if is_note else f"https://www.iesdouyin.com/share/video/{aweme_id}/"
-    )
-    response = session.get(
-        share_url, headers={"Referer": "https://www.douyin.com/"},
-        timeout=(10, 30)
-    )
-    response.raise_for_status()
-    router = parse_router_data(response.text)
+    resolved_url = resolved.url
+    is_slides = bool(re.search(r"/(?:share/)?slides/\d+", resolved_url)) or "is_slides=1" in resolved_url
+    is_note = bool(re.search(r"/(?:share/)?note/\d+", resolved_url))
 
-    image_urls = _find_douyin_image_album(router)
-    if image_urls:
-        title = f"Douyin Photo Album {aweme_id}"
-        for obj in walk_objects(router):
-            desc = obj.get("desc") or obj.get("title")
-            if isinstance(desc, str) and desc.strip():
-                title = desc.strip()[:300]
-                break
-        return {
-            "aweme_id": aweme_id, "title": title, "media_type": "photos",
-            "image_urls": image_urls, "play_url": None,
-            "thumbnail": image_urls[0], "session": session,
-        }
+    if is_slides:
+        paths = ("slides", "note", "video")
+    elif is_note:
+        paths = ("note", "slides", "video")
+    else:
+        paths = ("video", "note", "slides")
 
-    for obj in walk_objects(router):
-        video = obj.get("video")
-        if not isinstance(video, dict):
-            continue
-        candidates = []
-        for key in ("play_addr", "play_addr_h264", "play_addr_265", "play_addr_bytevc1"):
-            value = video.get(key)
-            if isinstance(value, dict):
-                candidates.extend(value.get("url_list") or [])
-        play_url = next(
-            (u for u in candidates if isinstance(u, str) and u.startswith("https://")),
-            None
-        )
-        if not play_url:
-            continue
-        desc = obj.get("desc") or obj.get("description") or f"Douyin_{aweme_id}"
-        cover = video.get("cover") or video.get("origin_cover") or {}
-        cover_urls = cover.get("url_list") or []
-        return {
-            "aweme_id": aweme_id, "title": str(desc)[:300],
-            "media_type": "video",
-            "thumbnail": cover_urls[0] if cover_urls else None,
-            "play_url": play_url, "image_urls": [], "session": session,
-        }
+    errors = []
+    music_url = None
+    for path in paths:
+        suffix = "/?is_slides=1" if path == "slides" else "/"
+        share_url = f"https://www.iesdouyin.com/share/{path}/{aweme_id}{suffix}"
+        try:
+            response = session.get(
+                share_url,
+                headers={"Referer": "https://www.douyin.com/", "Accept": "text/html,application/xhtml+xml"},
+                timeout=(10, 30),
+            )
+            response.raise_for_status()
+            router = parse_router_data(response.text)
+            music_url = music_url or _find_douyin_music_url(router)
+            item = _find_douyin_aweme_item(router, aweme_id)
+            if item:
+                data = _douyin_data_from_item(item, aweme_id, session, music_url)
+                if data:
+                    return data
+            errors.append(f"{path}: SSR không chứa media URL dùng được")
+        except Exception as exc:
+            errors.append(f"{path}: {str(exc)[:130]}")
+
+    # Older public endpoint. It often returns the complete image list even when
+    # the slides SSR shell contains only partial metadata.
+    for host in ("www.iesdouyin.com", "www.douyin.com"):
+        api_url = f"https://{host}/web/api/v2/aweme/iteminfo/?item_ids={aweme_id}"
+        try:
+            response = session.get(
+                api_url,
+                headers={
+                    "Referer": f"https://www.iesdouyin.com/share/slides/{aweme_id}/",
+                    "Accept": "application/json,text/plain,*/*",
+                },
+                timeout=(10, 25),
+            )
+            response.raise_for_status()
+            try:
+                payload = response.json()
+            except ValueError:
+                payload = json.loads(response.text)
+            item = _find_douyin_aweme_item(payload, aweme_id)
+            if item:
+                data = _douyin_data_from_item(item, aweme_id, session, music_url)
+                if data:
+                    return data
+            errors.append(f"{host} iteminfo: phản hồi không có media URL")
+        except Exception as exc:
+            errors.append(f"{host} iteminfo: {str(exc)[:130]}")
+
     raise RuntimeError(
-        "Trang chia sẻ đã mở nhưng không tìm thấy dữ liệu video hoặc album ảnh công khai. "
-        "Douyin có thể đã đổi cấu trúc hoặc giới hạn nội dung."
+        "Không lấy được media từ các nguồn công khai. Chi tiết: " + " | ".join(errors[:5])
     )
 
 def ydl_options():
@@ -307,9 +481,54 @@ def has_audio_stream(path: Path) -> bool:
     )
     return result.returncode == 0 and "audio" in result.stdout.lower()
 
+
+def _download_douyin_asset(session, urls, media_kind: str, max_bytes: int):
+    failures = []
+    for media_url in urls:
+        try:
+            if not is_allowed_douyin_media_url(media_url):
+                raise RuntimeError("CDN host không được hỗ trợ")
+            with session.get(
+                media_url,
+                headers={"Referer": "https://www.douyin.com/"},
+                timeout=(10, 90),
+                stream=True,
+            ) as response:
+                response.raise_for_status()
+                if not is_allowed_douyin_media_url(response.url):
+                    raise RuntimeError("CDN chuyển hướng tới host không được hỗ trợ")
+                content = response.content
+                if not content or len(content) > max_bytes:
+                    raise RuntimeError("Tệp rỗng hoặc vượt giới hạn kích thước")
+                ctype = response.headers.get("Content-Type", "").lower()
+                if "text/html" in ctype:
+                    raise RuntimeError("CDN trả HTML thay vì media")
+
+                if media_kind == "image":
+                    if content.startswith(b"\xff\xd8\xff"):
+                        ext = ".jpg"
+                    elif content.startswith(b"\x89PNG\r\n\x1a\n"):
+                        ext = ".png"
+                    elif content[:4] == b"RIFF" and content[8:12] == b"WEBP":
+                        ext = ".webp"
+                    elif content[:6] in (b"GIF87a", b"GIF89a"):
+                        ext = ".gif"
+                    elif b"ftypavif" in content[:32]:
+                        ext = ".avif"
+                    else:
+                        raise RuntimeError(f"Phản hồi không phải ảnh hợp lệ ({ctype or 'không rõ định dạng'})")
+                else:
+                    if b"ftyp" not in content[:32] and not content.startswith(b"\x1aE\xdf\xa3"):
+                        raise RuntimeError(f"Phản hồi không phải video hợp lệ ({ctype or 'không rõ định dạng'})")
+                    ext = ".mp4"
+                return content, ext
+        except Exception as exc:
+            failures.append(str(exc)[:110])
+    raise RuntimeError("; ".join(failures[:3]) or "Không có URL media hợp lệ")
+
 @app.get("/api/health")
 def health():
-    return {"ok": True, "service": "NoLogo Downloader", "version": "5"}
+    return {"ok": True, "service": "NoLogo Downloader", "version": "6.0"}
 
 @app.post("/api/info")
 def get_info(body: LinkRequest):
@@ -319,11 +538,26 @@ def get_info(body: LinkRequest):
     if platform == "Douyin":
         try:
             data = extract_douyin_public_data(original_url)
+            image_count = sum(1 for item in data.get("items", []) if item.get("image_urls"))
+            video_count = sum(1 for item in data.get("items", []) if item.get("video_urls"))
+            if data["media_type"] == "slides" and image_count and not video_count:
+                note = (
+                    "Đã tìm thấy ảnh. Dữ liệu công khai của bài này chưa cung cấp "
+                    "đường dẫn clip Live Photo/video có thể tải; ZIP có thể chỉ gồm ảnh tĩnh."
+                )
+            elif data["media_type"] == "slides":
+                note = (
+                    "Đã tìm thấy các tệp ảnh/video có đường dẫn công khai. "
+                    "ZIP chỉ chứa những tệp tải thành công."
+                )
+            else:
+                note = "Video Douyin sẵn sàng tải; chất lượng và watermark phụ thuộc nguồn công khai."
             return {
                 "title": data["title"], "thumbnail": data["thumbnail"],
                 "platform": "Douyin", "media_type": data["media_type"],
-                "image_count": len(data.get("image_urls") or []), "formats": [],
-                "note": "Ảnh/video được lấy từ dữ liệu công khai mà Douyin cung cấp.",
+                "image_count": image_count, "video_count": video_count,
+                "slide_count": len(data.get("items", [])), "formats": [],
+                "note": note,
             }
         except Exception as exc:
             raise HTTPException(422, f"Không phân tích được Douyin: {str(exc)[:650]}")
@@ -374,49 +608,58 @@ def download(body: LinkRequest):
         try:
             data = extract_douyin_public_data(original_url)
             temp_dir = Path(tempfile.mkdtemp(prefix="nologo_douyin_"))
-            if data["media_type"] == "photos":
-                zip_path = temp_dir / f"douyin_album_{data['aweme_id']}.zip"
-                allowed_media_hosts = ("douyinpic.com", "byteimg.com", "ibytedtos.com", "pstatp.com")
+            if data["media_type"] in ("photos", "slides"):
+                zip_path = temp_dir / f"douyin_media_{data['aweme_id']}.zip"
+                saved, failed = 0, []
+                items = data.get("items") or [
+                    {"index": i, "kind": "image", "image_urls": [u], "video_urls": []}
+                    for i, u in enumerate(data.get("image_urls", []), 1)
+                ]
                 with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as archive:
-                    saved = 0
-                    for index, image_url in enumerate(data["image_urls"], 1):
-                        host = (urlparse(image_url).hostname or "").lower()
-                        if not any(host == h or host.endswith("." + h) for h in allowed_media_hosts):
-                            continue
-                        image_response = data["session"].get(
-                            image_url, headers={"Referer": "https://www.douyin.com/"},
-                            timeout=(10, 45), stream=True
-                        )
-                        image_response.raise_for_status()
-                        content = image_response.content
-                        if content and len(content) <= 32 * 1024 * 1024:
-                            ctype = image_response.headers.get("Content-Type", "").lower()
-                            ext = ".webp" if "webp" in ctype else ".png" if "png" in ctype else ".jpg"
-                            archive.writestr(f"image-{index:02d}{ext}", content)
-                            saved += 1
+                    for item in items:
+                        idx = item["index"]
+                        for kind, urls, max_bytes in (
+                            ("image", item.get("image_urls") or [], 40 * 1024 * 1024),
+                            ("motion", item.get("video_urls") or [], 180 * 1024 * 1024),
+                        ):
+                            if not urls:
+                                continue
+                            try:
+                                content, ext = _download_douyin_asset(
+                                    data["session"], urls, "image" if kind == "image" else "video", max_bytes
+                                )
+                                archive.writestr(f"{idx:03d}-{kind}{ext}", content)
+                                saved += 1
+                            except Exception as exc:
+                                failed.append(f"slide {idx} {kind}: {str(exc)[:160]}")
                 if saved == 0:
-                    raise RuntimeError("Không tải được ảnh nào từ album Douyin.")
-                return FileResponse(zip_path, media_type="application/zip", filename=zip_path.name)
+                    raise RuntimeError(
+                        "Douyin có trả dữ liệu bài đăng nhưng không tải được media nào: "
+                        + "; ".join(failed[:4])
+                    )
+                return FileResponse(
+                    zip_path,
+                    media_type="application/zip",
+                    filename=zip_path.name,
+                    headers={
+                        "X-NoLogo-Partial-Download": str(len(failed)),
+                        "X-NoLogo-Saved-Assets": str(saved),
+                    },
+                )
             file_path = temp_dir / f"douyin_{data['aweme_id']}.mp4"
-            with data["session"].get(
-                data["play_url"], stream=True,
-                headers={"Referer": "https://www.iesdouyin.com/"},
-                timeout=(15, 90),
-            ) as response:
+            with data["session"].get(data["play_url"], stream=True, headers={"Referer": "https://www.douyin.com/"}, timeout=(15, 90)) as response:
                 response.raise_for_status()
                 if "text/html" in response.headers.get("Content-Type", "").lower():
-                    raise RuntimeError("Douyin trả về HTML thay vì tệp video.")
+                    raise RuntimeError("Douyin trả về HTML thay vì video.")
                 with file_path.open("wb") as out:
                     for chunk in response.iter_content(256 * 1024):
                         if chunk:
                             out.write(chunk)
             if file_path.stat().st_size < 1024:
-                raise RuntimeError("Tệp video tải về không hợp lệ.")
-            return FileResponse(file_path, media_type="video/mp4",
-                                filename=file_path.name)
+                raise RuntimeError("Tệp video Douyin không hợp lệ.")
+            return FileResponse(file_path, media_type="video/mp4", filename=file_path.name)
         except Exception as exc:
             raise HTTPException(422, f"Tải Douyin thất bại: {str(exc)[:650]}")
-
     try:
         resolved = resolve_public_url(original_url, "TikTok")
     except Exception as exc:
