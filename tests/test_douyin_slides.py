@@ -2,7 +2,7 @@ import json
 import unittest
 from app import (
     _find_douyin_music_url, _find_douyin_slide_list,
-    _slide_image_urls, _slide_video_urls, _douyin_data_from_item, _clean_play_candidates, extract_douyin_id, parse_router_data,
+    _slide_image_urls, _slide_video_urls, _douyin_data_from_item, _clean_play_candidates, extract_douyin_id, parse_router_data, is_allowed_douyin_media_url,
 )
 
 AWEME_ID = "7708178105391047397"
@@ -92,6 +92,36 @@ class DouyinSlidesTests(unittest.TestCase):
         urls = _slide_video_urls(slide)
         self.assertTrue(urls)
         self.assertIn("/aweme/v1/play/?video_id=live-photo-uri", urls[0])
+        self.assertIn("watermark=0", urls[0])
+        self.assertTrue(is_allowed_douyin_media_url(urls[0]))
+
+    def test_live_photo_direct_video_play_addr_is_extracted(self):
+        slide = {
+            "url_list": ["https://p3-pc-sign.douyinpic.com/live-photo.jpg"],
+            "video_play_addr": {
+                "url_list": ["https://v5-dy-o.zjcdn.com/live-photo-motion.mp4"]
+            },
+        }
+        urls = _slide_video_urls(slide)
+        self.assertEqual(urls, ["https://v5-dy-o.zjcdn.com/live-photo-motion.mp4"])
+
+    def test_live_photo_video_download_addr_uri_is_extracted(self):
+        slide = {
+            "video_download_addr": {
+                "uri": "live-motion-123",
+            }
+        }
+        urls = _slide_video_urls(slide)
+        self.assertTrue(urls)
+        self.assertIn("live-motion-123", urls[0])
+        self.assertTrue(is_allowed_douyin_media_url(urls[0]))
+
+    def test_live_photo_video_url_can_be_a_direct_string(self):
+        slide = {
+            "video_play_addr": "https://v5-dy-o.zjcdn.com/live-motion-direct.mp4"
+        }
+        urls = _slide_video_urls(slide)
+        self.assertEqual(urls, ["https://v5-dy-o.zjcdn.com/live-motion-direct.mp4"])
 
     def test_background_music_is_separate_from_live_photo_clips(self):
         self.assertEqual(_find_douyin_music_url(self.router), "https://sf1-cdn-tos.douyinstatic.com/music.mp3")
