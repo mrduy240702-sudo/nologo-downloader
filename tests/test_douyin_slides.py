@@ -1,3 +1,4 @@
+import json
 import unittest
 from app import (
     _find_douyin_music_url, _find_douyin_slide_list,
@@ -55,7 +56,8 @@ class DouyinSlidesTests(unittest.TestCase):
         self.assertEqual(extract_douyin_id("https://v.douyin.com/example/", FakeSession()), AWEME_ID)
 
     def test_parser_reads_router_assignment(self):
-        parsed = parse_router_data("window._ROUTER_DATA = {\\"aweme_detail\\": {\\"aweme_id\\": \\" + AWEME_ID + "\\"}};")
+        raw = {"aweme_detail": {"aweme_id": AWEME_ID}}
+        parsed = parse_router_data("window._ROUTER_DATA = " + json.dumps(raw) + ";")
         self.assertEqual(parsed["aweme_detail"]["aweme_id"], AWEME_ID)
 
     def test_mixed_slides_are_found_in_order(self):
