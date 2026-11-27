@@ -2,7 +2,7 @@ import json
 import unittest
 from app import (
     _find_douyin_music_url, _find_douyin_slide_list,
-    _slide_image_urls, _slide_video_urls, extract_douyin_id, parse_router_data,
+    _slide_image_urls, _slide_video_urls, _douyin_data_from_item, _clean_play_candidates, extract_douyin_id, parse_router_data,
 )
 
 AWEME_ID = "7708178105391047397"
@@ -72,6 +72,19 @@ class DouyinSlidesTests(unittest.TestCase):
 
     def test_background_music_is_separate_from_live_photo_clips(self):
         self.assertEqual(_find_douyin_music_url(self.router), "https://sf1-cdn-tos.douyinstatic.com/music.mp3")
+
+    def test_iteminfo_fallback_can_extract_mixed_media(self):
+        item = self.router["aweme_detail"]
+        data = _douyin_data_from_item(item, AWEME_ID, object())
+        self.assertEqual(data["media_type"], "slides")
+        self.assertEqual(len(data["items"]), 3)
+        self.assertEqual(data["music_url"], "https://sf1-cdn-tos.douyinstatic.com/music.mp3")
+
+    def test_playwm_candidates_prefer_public_play_variant(self):
+        original = "https://aweme.snssdk.com/aweme/v1/playwm/?video_id=abc"
+        candidates = _clean_play_candidates([original])
+        self.assertEqual(candidates[0], "https://aweme.snssdk.com/aweme/v1/play/?video_id=abc")
+        self.assertIn(original, candidates)
 
 if __name__ == "__main__":
     unittest.main()
