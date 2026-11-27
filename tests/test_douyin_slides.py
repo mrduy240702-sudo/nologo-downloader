@@ -1,0 +1,75 @@
+import unittest
+from app import (
+    _find_douyin_music_url, _find_douyin_slide_list,
+    _slide_image_urls, _slide_video_urls, extract_douyin_id, parse_router_data,
+)
+
+AWEME_ID = "7708178105391047397"
+
+class FakeResponse:
+    def __init__(self, url, text=""):
+        self.url = url
+        self.text = text
+    def raise_for_status(self):
+        return None
+
+class FakeSession:
+    def get(self, *args, **kwargs):
+        return FakeResponse(f"https://www.iesdouyin.com/share/slides/{AWEME_ID}/?is_slides=1")
+
+class DouyinSlidesTests(unittest.TestCase):
+    def setUp(self):
+        self.router = {
+            "aweme_detail": {
+                "aweme_id": AWEME_ID,
+                "desc": "Test mixed slides",
+                "is_slides": True,
+                "images": [
+                    {
+                        "url_list": ["https://p3-pc-sign.douyinpic.com/slide-1.jpg"],
+                        "download_url_list": ["https://p3-pc-sign.douyinpic.com/slide-1-original.jpg"],
+                        "live_photo_type": 1,
+                        "video": {
+                            "duration": 5038,
+                            "play_addr": {"url_list": ["https://v5-dy-o.zjcdn.com/clip-1.mp4"]},
+                        },
+                    },
+                    {
+                        "url_list": ["https://p3-pc-sign.douyinpic.com/slide-2.jpg"],
+                        "video": None,
+                    },
+                    {
+                        "video": {
+                            "duration": 3200,
+                            "play_addr_h264": {"url_list": ["https://v5-dy-o.zjcdn.com/clip-3.mp4"]},
+                        },
+                    },
+                ],
+                "music": {
+                    "play_url": {"url_list": ["https://sf1-cdn-tos.douyinstatic.com/music.mp3"]}
+                },
+            }
+        }
+
+    def test_share_slides_id_is_extracted(self):
+        self.assertEqual(extract_douyin_id("https://v.douyin.com/example/", FakeSession()), AWEME_ID)
+
+    def test_parser_reads_router_assignment(self):
+        parsed = parse_router_data("window._ROUTER_DATA = {\\"aweme_detail\\": {\\"aweme_id\\": \\" + AWEME_ID + "\\"}};")
+        self.assertEqual(parsed["aweme_detail"]["aweme_id"], AWEME_ID)
+
+    def test_mixed_slides_are_found_in_order(self):
+        obj, slides = _find_douyin_slide_list(self.router, AWEME_ID)
+        self.assertIsNotNone(obj)
+        self.assertEqual(len(slides), 3)
+        self.assertEqual(len(_slide_image_urls(slides[0])), 2)
+        self.assertEqual(len(_slide_video_urls(slides[0])), 1)
+        self.assertEqual(len(_slide_image_urls(slides[1])), 1)
+        self.assertEqual(len(_slide_video_urls(slides[1])), 0)
+        self.assertEqual(len(_slide_video_urls(slides[2])), 1)
+
+    def test_background_music_is_separate_from_live_photo_clips(self):
+        self.assertEqual(_find_douyin_music_url(self.router), "https://sf1-cdn-tos.douyinstatic.com/music.mp3")
+
+if __name__ == "__main__":
+    unittest.main()
