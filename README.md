@@ -1,26 +1,13 @@
-# NoLogo Downloader V3
+# NoLogo Downloader V4
 
-V3 adds a dedicated public-page Douyin extractor and improves share-text handling.
-
-## Changes
-- Accepts either a bare URL or full copied share text (including Chinese Douyin share text).
-- Resolves `v.douyin.com` short links and extracts the video ID from the redirect.
-- Requests the public `iesdouyin.com/share/video/<id>/?from_ssr=1` page using a mobile browser user-agent.
-- Parses JSON from `window._ROUTER_DATA` and reads the public `video.play_addr.url_list` URL as supplied.
-- Downloads the public playback URL without modifying its path or trying to remove watermarks.
-- Keeps TikTok video through yt-dlp and TikTok Photo Mode ZIP through gallery-dl.
-
-## Douyin limits
-This is an experimental public-page parser. Douyin can change the page structure, block hosting-provider IPs, region-limit content, or omit public playback data. It does not log in, import account cookies, bypass private access, DRM, or platform security. The source page may provide a watermarked stream; the app does not alter it to strip the watermark.
+- TikTok: follows short-link redirects before checking whether the final URL is `/photo/` or `/video/`. This fixes the V3 routing bug shown when a `vt.tiktok.com` short link redirected to a Photo Mode URL.
+- TikTok Photo Mode: uses gallery-dl to retrieve image URLs and downloads the album as ZIP.
+- Douyin: creates an anonymous visitor `ttwid` session, opens the public mobile share page, parses `_ROUTER_DATA`, and downloads the playback URL exactly as provided by Douyin.
+- No account login or personal browser cookies are requested.
+- Does not rewrite playback URLs to strip watermarks. The watermark status depends on the stream Douyin itself provides.
 
 ## Deploy
-Replace these files in the existing GitHub repository:
-- `app.py`
-- `requirements.txt`
-- `README.md`
-- `static/index.html`
+Replace `app.py`, `requirements.txt`, `README.md`, and `static/index.html` in the existing GitHub repository. Keep `Procfile` and `render.yaml`, then commit to `main`.
 
-Keep `Procfile` and `render.yaml`. Commit to `main`; Render should auto-deploy.
-
-## Notes
-Render Free has limited memory and may not be suitable for large media transfers. Temporary files are currently retained in the service's ephemeral filesystem until the instance restarts; production deployment should add cleanup/background task handling and request-size/time limits.
+## Limitations
+Douyin may change the share-page structure, block Render IPs, or withhold playback data. This code has syntax-checked locally but has not been tested against the user's exact live links from Render. Render Free resource limits may also affect larger downloads.
