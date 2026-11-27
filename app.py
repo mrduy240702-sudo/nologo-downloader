@@ -14,7 +14,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-app = FastAPI(title="NoLogo Downloader", version="6.0")
+app = FastAPI(title="NoLogo Downloader", version="6.1")
 
 ALLOWED_HOSTS = {
     "tiktok.com", "www.tiktok.com", "m.tiktok.com", "vm.tiktok.com",
@@ -528,7 +528,7 @@ def _download_douyin_asset(session, urls, media_kind: str, max_bytes: int):
 
 @app.get("/api/health")
 def health():
-    return {"ok": True, "service": "NoLogo Downloader", "version": "6.0"}
+    return {"ok": True, "service": "NoLogo Downloader", "version": "6.1"}
 
 @app.post("/api/info")
 def get_info(body: LinkRequest):

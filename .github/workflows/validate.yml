@@ -3,7 +3,7 @@ on:
   pull_request:
     branches: [main]
   push:
-    branches: [feature/douyin-slides-v5-2, release/v6.0-stable]
+    branches: [feature/douyin-slides-v5-2, release/v6.0-stable, feature/quick-paste-clear-v6-1]
 jobs:
   python-check:
     runs-on: ubuntu-latest
