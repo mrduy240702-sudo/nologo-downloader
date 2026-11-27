@@ -2,7 +2,7 @@ import json
 import unittest
 from app import (
     _find_douyin_music_url, _find_douyin_slide_list,
-    _slide_image_urls, _slide_video_urls, _douyin_data_from_item, _clean_play_candidates, extract_douyin_id, parse_router_data, is_allowed_douyin_media_url,
+    _slide_image_urls, _slide_video_urls, _douyin_data_from_item, _clean_play_candidates, extract_douyin_id, parse_router_data, is_allowed_douyin_media_url, _select_slidesinfo_aweme, _is_audio_media_url,
 )
 
 AWEME_ID = "7708178105391047397"
@@ -122,6 +122,58 @@ class DouyinSlidesTests(unittest.TestCase):
         }
         urls = _slide_video_urls(slide)
         self.assertEqual(urls, ["https://v5-dy-o.zjcdn.com/live-motion-direct.mp4"])
+
+
+    def test_slidesinfo_selects_exact_aweme_id(self):
+        payload = {
+            "aweme_details": [
+                {"aweme_id": "1111111111111111111", "images": [{"url_list": ["https://p3-pc-sign.douyinpic.com/wrong.jpg"]}]},
+                {"aweme_id": AWEME_ID, "images": [{"url_list": ["https://p3-pc-sign.douyinpic.com/right.jpg"]}]},
+            ]
+        }
+        selected = _select_slidesinfo_aweme(payload, AWEME_ID)
+        self.assertEqual(selected["aweme_id"], AWEME_ID)
+        self.assertEqual(selected["images"][0]["url_list"][0], "https://p3-pc-sign.douyinpic.com/right.jpg")
+
+    def test_independent_root_video_is_added_to_mixed_post(self):
+        item = {
+            "aweme_id": AWEME_ID,
+            "desc": "Mixed post",
+            "images": [
+                {"url_list": ["https://p3-pc-sign.douyinpic.com/photo-1.jpg"], "video": None},
+                {"url_list": ["https://p3-pc-sign.douyinpic.com/photo-2.jpg"], "video": None},
+            ],
+            "video": {
+                "duration": 6400,
+                "play_addr": {
+                    "url_list": ["https://v11-weba.douyinvod.com/mixed-clip.mp4"]
+                },
+            },
+        }
+        data = _douyin_data_from_item(item, AWEME_ID, object())
+        self.assertEqual(data["media_type"], "slides")
+        self.assertEqual(data["items"][-1]["kind"], "video")
+        self.assertEqual(data["items"][-1]["video_urls"], ["https://v11-weba.douyinvod.com/mixed-clip.mp4"])
+
+    def test_root_mp3_track_is_not_added_as_video(self):
+        item = {
+            "aweme_id": AWEME_ID,
+            "desc": "Photo slideshow with soundtrack",
+            "images": [
+                {"url_list": ["https://p3-pc-sign.douyinpic.com/photo-1.jpg"], "video": None},
+            ],
+            "video": {
+                "duration": 0,
+                "play_addr": {
+                    "uri": "https://sf6-cdn-tos.douyinstatic.com/obj/ies-music/song.mp3",
+                    "url_list": ["https://sf6-cdn-tos.douyinstatic.com/obj/ies-music/song.mp3"],
+                },
+            },
+        }
+        data = _douyin_data_from_item(item, AWEME_ID, object())
+        self.assertEqual(len(data["items"]), 1)
+        self.assertEqual(data["items"][0]["kind"], "image")
+        self.assertTrue(_is_audio_media_url("https://sf6-cdn-tos.douyinstatic.com/obj/ies-music/song.mp3"))
 
     def test_background_music_is_separate_from_live_photo_clips(self):
         self.assertEqual(_find_douyin_music_url(self.router), "https://sf1-cdn-tos.douyinstatic.com/music.mp3")
