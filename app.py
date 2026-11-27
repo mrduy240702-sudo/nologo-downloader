@@ -138,7 +138,7 @@ def extract_douyin_id(url: str, session: requests.Session) -> str:
     response.raise_for_status()
     final_url = response.url
     for pattern in (
-        r"/video/(\d+)", r"/share/video/(\d+)", r"/note/(\d+)", r"/share/note/(\d+)",
+        r"/video/(\d+)", r"/share/video/(\d+)", r"/slides/(\d+)", r"/share/slides/(\d+)", r"/note/(\d+)", r"/share/note/(\d+)",
         r"[?&]modal_id=(\d+)", r"[?&]item_id=(\d+)",
     ):
         match = re.search(pattern, final_url)
@@ -183,7 +183,7 @@ def walk_objects(value):
 DOUYIN_MEDIA_HOSTS = (
     "douyinpic.com", "byteimg.com", "pstatp.com", "ibytedtos.com",
     "douyinvod.com", "zjcdn.com", "snssdk.com", "bytecdn.cn",
-    "bytedance.net", "bytedance.com",
+    "bytedance.net", "bytedance.com", "douyinstatic.com", "douyin.com", "toutiao.com",
 )
 
 def is_allowed_douyin_media_url(value: str) -> bool:
@@ -241,6 +241,17 @@ def _find_douyin_slide_list(router, aweme_id: str):
                 return obj, images
     return None, []
 
+def _find_douyin_music_url(router):
+    for obj in walk_objects(router):
+        music = obj.get("music")
+        if not isinstance(music, dict):
+            continue
+        play_url = music.get("play_url")
+        urls = _url_list(play_url)
+        if urls:
+            return urls[0]
+    return None
+
 def _title_from_router(router, aweme_id):
     objects = list(walk_objects(router))
     for obj in objects:
@@ -268,6 +279,7 @@ def extract_douyin_public_data(url: str):
     response.raise_for_status()
     router = parse_router_data(response.text)
     title = _title_from_router(router, aweme_id)
+    music_url = _find_douyin_music_url(router)
     _, slides = _find_douyin_slide_list(router, aweme_id)
     if slides:
         items = []
@@ -285,7 +297,7 @@ def extract_douyin_public_data(url: str):
                 })
         if items:
             first_image = next((x['image_urls'][0] for x in items if x['image_urls']), None)
-            return {"aweme_id": aweme_id, "title": title, "media_type": "slides", "items": items, "thumbnail": first_image, "session": session}
+            return {"aweme_id": aweme_id, "title": title, "media_type": "slides", "items": items, "thumbnail": first_image, "music_url": music_url, "session": session}
     for obj in walk_objects(router):
         if str(obj.get("aweme_id") or obj.get("item_id") or "") not in ("", aweme_id):
             continue
@@ -418,6 +430,21 @@ def download(body: LinkRequest):
                                         saved += 1
                                 except Exception as exc:
                                     failed.append(f"slide {idx} {kind}: {str(exc)[:140]}")
+                    if data.get("music_url"):
+                        try:
+                            if not is_allowed_douyin_media_url(data["music_url"]):
+                                raise RuntimeError("Music CDN host không nằm trong danh sách cho phép")
+                            with data["session"].get(data["music_url"], headers={"Referer": "https://www.douyin.com/"}, timeout=(10, 90), stream=True) as music_response:
+                                music_response.raise_for_status()
+                                music_bytes = music_response.content
+                                if music_bytes and len(music_bytes) <= 50 * 1024 * 1024:
+                                    ctype = music_response.headers.get("Content-Type", "").lower()
+                                    ext = ".m4a" if "audio/mp4" in ctype else ".mp3"
+                                    archive.writestr("BACKGROUND-MUSIC" + ext, music_bytes)
+                                    saved += 1
+                        except Exception as exc:
+                            failed.append(f"background music: {str(exc)[:140]}")
+                    archive.writestr("SLIDES-MANIFEST.json", json.dumps({"aweme_id": data["aweme_id"], "title": data["title"], "items": [{"index": item["index"], "kind": item["kind"], "duration_ms": item.get("duration_ms")} for item in data["items"]], "background_music_included": bool(data.get("music_url"))}, ensure_ascii=False, indent=2))
                     if failed:
                         archive.writestr("DOWNLOAD-REPORT.txt", f"Đã lưu {saved} mục; lỗi {len(failed)} mục:\n" + "\n".join(failed))
                 if saved == 0:
