@@ -1,4 +1,5 @@
 import json
+import mimetypes
 import re
 import shutil
 import subprocess
@@ -14,7 +15,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-app = FastAPI(title="NoLogo Downloader", version="6.1")
+app = FastAPI(title="NoLogo Downloader", version="6.2")
 
 ALLOWED_HOSTS = {
     "tiktok.com", "www.tiktok.com", "m.tiktok.com", "vm.tiktok.com",
@@ -470,6 +471,23 @@ def ydl_options():
     }
 
 
+def tiktok_format_selector(quality: str) -> str:
+    """
+    Select the best source video/audio without forcing H.264.
+    H.264-only selection can silently choose a lower resolution when TikTok
+    exposes a higher-resolution HEVC/AV1 stream.
+    """
+    if quality == "best":
+        return "bestvideo*+bestaudio/best"
+    if quality in {"1080", "720", "480"}:
+        height = int(quality)
+        return (
+            f"bestvideo*[height<={height}]+bestaudio/"
+            f"best[height<={height}]"
+        )
+    return "bestvideo*+bestaudio/best"
+
+
 def has_audio_stream(path: Path) -> bool:
     ffprobe = shutil.which("ffprobe")
     if not ffprobe:
@@ -528,7 +546,7 @@ def _download_douyin_asset(session, urls, media_kind: str, max_bytes: int):
 
 @app.get("/api/health")
 def health():
-    return {"ok": True, "service": "NoLogo Downloader", "version": "6.1"}
+    return {"ok": True, "service": "NoLogo Downloader", "version": "6.2"}
 
 @app.post("/api/info")
 def get_info(body: LinkRequest):
@@ -587,14 +605,21 @@ def get_info(body: LinkRequest):
             raise ValueError("Nguồn không trả về thông tin bài đăng.")
         formats = [{
             "format_id": f.get("format_id"), "height": f.get("height"),
-            "width": f.get("width"), "ext": f.get("ext")
+            "width": f.get("width"), "ext": f.get("ext"),
+            "vcodec": f.get("vcodec"), "tbr": f.get("tbr"),
         } for f in (info.get("formats") or [])
           if f.get("vcodec") not in (None, "none")]
+        max_height = max((int(f.get("height") or 0) for f in formats), default=0)
         return {
             "title": info.get("title") or "TikTok video",
             "thumbnail": info.get("thumbnail"), "platform": "TikTok",
             "media_type": "video", "formats": formats,
-            "note": "Chất lượng phụ thuộc định dạng nguồn cung cấp.",
+            "max_height": max_height or None,
+            "note": (
+                f"Nguồn đang cung cấp tối đa {max_height}p. "
+                "Chế độ cao nhất sẽ tải độ phân giải tốt nhất mà TikTok cho phép."
+                if max_height else "Chất lượng phụ thuộc định dạng nguồn cung cấp."
+            ),
         }
     except Exception as exc:
         raise HTTPException(422, f"Không thể phân tích TikTok: {str(exc)[:650]}")
@@ -688,35 +713,40 @@ def download(body: LinkRequest):
             raise HTTPException(422, f"Tải album ảnh thất bại: {str(exc)[:650]}")
 
     quality = body.quality if body.quality in {"best", "1080", "720", "480"} else "best"
-    fmt = "bestvideo[vcodec^=avc1]+bestaudio/best[ext=mp4][vcodec^=avc1][acodec!=none]/best" if quality == "best" else (
-        f"bestvideo[height<={int(quality)}][vcodec^=avc1]+bestaudio/best[height<={int(quality)}][ext=mp4][vcodec^=avc1][acodec!=none]/best"
-    )
+    fmt = tiktok_format_selector(quality)
     temp_dir = tempfile.mkdtemp(prefix="nologo_tiktok_")
     opts = {
         "quiet": True, "no_warnings": True, "noplaylist": True,
         "format": fmt,
         "outtmpl": str(Path(temp_dir) / "%(title).80s_%(id)s.%(ext)s"),
-        "merge_output_format": "mp4", "retries": 3, "socket_timeout": 45,
+        "merge_output_format": "mp4/mkv", "retries": 3, "socket_timeout": 45,
         "http_headers": {"User-Agent": DESKTOP_UA},
     }
     try:
         with yt_dlp.YoutubeDL(opts) as ydl:
             info = ydl.extract_info(resolved, download=True)
             path = Path(ydl.prepare_filename(info))
-            if not path.exists() and path.with_suffix(".mp4").exists():
-                path = path.with_suffix(".mp4")
             if not path.exists():
-                matches = [p for p in Path(temp_dir).glob("*") if p.is_file()]
-                if not matches:
-                    raise FileNotFoundError("Không tìm thấy tệp sau khi tải.")
-                path = matches[0]
+                candidates = [
+                    path.with_suffix(ext)
+                    for ext in (".mp4", ".mkv", ".mov", ".webm")
+                    if path.with_suffix(ext).exists()
+                ]
+                if not candidates:
+                    candidates = [
+                        p for p in Path(temp_dir).glob("*")
+                        if p.is_file() and p.suffix.lower() in {".mp4", ".mkv", ".mov", ".webm"}
+                    ]
+                if not candidates:
+                    raise FileNotFoundError("Không tìm thấy tệp video sau khi ghép luồng.")
+                path = max(candidates, key=lambda p: p.stat().st_size)
             if not has_audio_stream(path):
                 raise RuntimeError(
-                    "TikTok không cung cấp luồng âm thanh dùng được cho định dạng đã chọn. "
-                    "V5 ưu tiên H.264 có tiếng; hãy thử lại hoặc kiểm tra bản gốc."
+                    "Tệp video tải về không có luồng âm thanh hợp lệ. "
+                    "Máy chủ không tự hạ độ phân giải để đổi lấy một bản kém chất lượng hơn."
                 )
         safe_name = re.sub(r"[^A-Za-z0-9._-]+", "_", path.name)[:120]
-        return FileResponse(path, media_type="video/mp4", filename=safe_name)
+        return FileResponse(path, media_type=mimetypes.guess_type(path.name)[0] or "application/octet-stream", filename=safe_name)
     except Exception as exc:
         raise HTTPException(422, f"Tải TikTok thất bại: {str(exc)[:650]}")
 
