@@ -13,12 +13,12 @@ V6.2 retains the existing stable flows:
 
 ## Video quality selection
 
-- **Cao nhất (giữ chất lượng gốc)** asks yt-dlp for the best source video stream plus the best audio stream. FFmpeg muxes the streams; this path does not intentionally re-encode or lower the video quality.
+- **Cao nhất (giữ chất lượng gốc)** uses yt-dlp's `bestvideo*+bestaudio/best` selector: best video-only plus audio where available, with a best combined-stream fallback. FFmpeg muxes the selected streams; this path does not intentionally re-encode or lower video quality.
 - Optional maximum-height choices include 4K (2160p), 2K (1440p), 1080p, 720p and 480p. A cap does not upscale a source: the file cannot exceed the resolution actually provided by TikTok.
 - The downloader no longer restricts selection to H.264/AVC. Higher resolution HEVC/AV1 source streams may therefore be selected. Some older devices or players may not support every codec/container combination; the file's video quality is preserved rather than transcoded down to H.264.
 - The info response reports the maximum video height exposed by the source when yt-dlp provides that metadata.
 
-## V6.2 mobile input behavior
+## V6.2 video quality and mobile input behavior
 
 - Text controls use a 16px font to avoid the automatic focus zoom Safari on iPhone/iPad applies to smaller form controls.
 - Quick paste and clear controls remain available.
