@@ -12,7 +12,7 @@ class StableReleaseTests(unittest.TestCase):
 
     def test_default_video_download_does_not_force_h264(self):
         selector = tiktok_format_selector("best")
-        self.assertEqual(selector, "bestvideo+bestaudio/best")
+        self.assertEqual(selector, "bestvideo*+bestaudio/best")
         self.assertNotIn("avc1", selector)
         self.assertNotIn("vcodec", selector)
 
