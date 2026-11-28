@@ -473,19 +473,19 @@ def ydl_options():
 
 def tiktok_format_selector(quality: str) -> str:
     """
-    Select the best source video/audio without forcing H.264.
-    H.264-only selection can silently choose a lower resolution when TikTok
-    exposes a higher-resolution HEVC/AV1 stream.
+    Prefer the highest-quality source video and best audio as separate streams.
+    Do not force AVC/H.264: that can downgrade resolution when a higher-quality
+    HEVC/AV1 source is available. FFmpeg muxes the streams without re-encoding.
     """
     if quality == "best":
-        return "bestvideo*+bestaudio/best"
-    if quality in {"1080", "720", "480"}:
+        return "bestvideo+bestaudio/best"
+    if quality in {"2160", "1440", "1080", "720", "480"}:
         height = int(quality)
         return (
-            f"bestvideo*[height<={height}]+bestaudio/"
+            f"bestvideo[height<={height}]+bestaudio/"
             f"best[height<={height}]"
         )
-    return "bestvideo*+bestaudio/best"
+    return "bestvideo+bestaudio/best"
 
 
 def has_audio_stream(path: Path) -> bool:
@@ -712,14 +712,14 @@ def download(body: LinkRequest):
         except Exception as exc:
             raise HTTPException(422, f"Tải album ảnh thất bại: {str(exc)[:650]}")
 
-    quality = body.quality if body.quality in {"best", "1080", "720", "480"} else "best"
+    quality = body.quality if body.quality in {"best", "2160", "1440", "1080", "720", "480"} else "best"
     fmt = tiktok_format_selector(quality)
     temp_dir = tempfile.mkdtemp(prefix="nologo_tiktok_")
     opts = {
         "quiet": True, "no_warnings": True, "noplaylist": True,
         "format": fmt,
         "outtmpl": str(Path(temp_dir) / "%(title).80s_%(id)s.%(ext)s"),
-        "merge_output_format": "mp4/mkv", "retries": 3, "socket_timeout": 45,
+        "merge_output_format": "mp4", "retries": 3, "socket_timeout": 45,
         "http_headers": {"User-Agent": DESKTOP_UA},
     }
     try:
