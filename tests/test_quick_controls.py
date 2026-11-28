@@ -21,5 +21,14 @@ class QuickControlsTests(unittest.TestCase):
         self.assertIn('$("url").focus()', self.html)
 
 
+    def test_text_controls_use_16px_font_to_prevent_ios_auto_zoom(self):
+        self.assertIn('font:16px/1.5', self.html)
+        self.assertIn('textarea,input,select{font-size:16px}', self.html)
+
+    def test_quality_options_include_2k_and_4k(self):
+        self.assertIn('value="2160"', self.html)
+        self.assertIn('value="1440"', self.html)
+
+
 if __name__ == "__main__":
     unittest.main()
