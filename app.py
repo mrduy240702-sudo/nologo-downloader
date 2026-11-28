@@ -478,11 +478,11 @@ def tiktok_format_selector(quality: str) -> str:
     HEVC/AV1 source is available. FFmpeg muxes the streams without re-encoding.
     """
     if quality == "best":
-        return "bestvideo+bestaudio/best"
+        return "bestvideo*+bestaudio/best"
     if quality in {"2160", "1440", "1080", "720", "480"}:
         height = int(quality)
         return (
-            f"bestvideo[height<={height}]+bestaudio/"
+            f"bestvideo*[height<={height}]+bestaudio/"
             f"best[height<={height}]"
         )
     return "bestvideo+bestaudio/best"
